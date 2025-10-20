@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-22.04
+    services:
+      docker:
+        image: docker:24.0.6
+        options: >-
+          --privileged
+    steps:
+    # 1. Checkout
+    - uses: actions/checkout@v4
+
+    # 2. Set up JDK 17
+    - name: Set up JDK
+      uses: actions/setup-java@v3
+      with:
+        distribution: temurin
+        java-version: 17
+
+    # 3. Cache Maven
+    - name: Cache Maven deps
+      uses: actions/cache@v3
+      with:
+        path: ~/.m2
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: ${{ runner.os }}-maven-
+
+    # 4. Build all Java modules
+    - name: Build Java
+      run: |
+        mvn --batch-mode -q -pl services/rank-aggregator-java -am clean verify
+
+    # 5. Install CMake & g++
+    - name: Install build-essential
+      run: sudo apt-get update && sudo apt-get -y install build-essential cmake pkg-config libprotobuf-dev protobuf-compiler
+
+    # 6. Build C++ modules
+    - name: Build C++
+      run: |
+        mkdir -p build && cd build
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+        cmake --build . --parallel
+      working-directory: services/gateway-cpp
+
+    # 8. Spin up infra stack (Kafka, DBs) for smoke test
+    - name: Install Podman
+      run: 
+        sudo apt-get update && sudo apt-get install -y podman podman-compose
+
+    - name: Start stack
+      run: podman-compose -f docker-compose.yml up -d
+
+    # 8. Smoke test Kafka connectivity
+    - name: Smoke test producer
+      run: |
+        # naïve simple script; replace later with proper integration tests
+        kafka-topics.sh --bootstrap-server localhost:9092 --list
+      env:
+        KAFKA_OPTS: "-Djava.security.auth.login.config=/dev/null"
+
+    # 9. Tear down
+    - name: Stop compose
+      if: always()
+      run: docker compose down -v
+
+  lint:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    # clang-format check (C++)
+    - name: clang-format
+      uses: DoozyX/clang-format-lint-action@v1.3
+      with:
+        source: "services/gateway-cpp"
+        extensions: "cpp,hpp,cc,h"
+
+    # checkstyle (Java)
+    - name: Checkstyle
+      run: |
+        mvn -q -pl services/rank-aggregator-java -am checkstyle:check
