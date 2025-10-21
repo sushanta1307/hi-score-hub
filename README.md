@@ -92,6 +92,8 @@ terraform apply -var-file=myenv.tfvars
 
 # Smoke Test
 ```sh 
+# 0 Create the podman machine with more cpu and memory (6 cpu 8192 Memeory)
+
 # 1. compile & package everything
 make all
 
@@ -103,8 +105,9 @@ open http://localhost:8080    # macOS
 xdg-open http://localhost:8080  # Linux
 
 # 4. run batch job once (will exit quickly because no data yet)
-mvn -q -pl services/batch-job-java exec:java
+mvn -q -pl services/batch-job exec:java
 
 # 5. teardown
-make down```
+make down
+```
 

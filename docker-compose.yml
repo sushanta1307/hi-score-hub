@@ -19,7 +19,7 @@ services:
 
   zookeeper:
     <<: *common-opts
-    image: docker.io/confluentinc/cp-zookeeper:7.5.0
+    image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/zookeeper:081220220604
     container_name: zookeeper
     restart: unless-stopped
     environment:
@@ -30,7 +30,7 @@ services:
 
   kafka:
     <<: *common-opts
-    image: docker.io/confluentinc/cp-kafka:7.5.0
+    image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/kafka:OCI_25.3.1.0.3
     container_name: kafka
     depends_on:
       - zookeeper
@@ -53,7 +53,7 @@ services:
 
   schema-registry:
     <<: *common-opts
-    image: docker.io/confluentinc/cp-schema-registry:7.5.0
+    image: sa-gateway-management-dev-docker-local.artifactory-builds.oci.oraclecorp.com/schema-registry:0.0.48
     container_name: schema-registry
     depends_on:
       - kafka
@@ -67,7 +67,7 @@ services:
 
   mysql:
     <<: *common-opts
-    image: docker.io/mysql:8.0
+    image: oicng-docker-local.artifactory-builds.oci.oraclecorp.com/mysql:5.7
     container_name: mysql
     restart: unless-stopped
     command: --default-authentication-plugin=mysql_native_password
@@ -81,28 +81,38 @@ services:
 
   cassandra:
     <<: *common-opts
-    image: docker.io/cassandra:4.1
+    image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/cassandra:0.1-cassandra_4-0-6.1
     container_name: cassandra
-    restart: unless-stopped
-    environment:
-      CASSANDRA_CLUSTER_NAME: "GLCluster"
-      MAX_HEAP_SIZE: 512M
-      HEAP_NEWSIZE: 256M
     ports:
-      - "9042:9042"
+      - "9042:9042"     # CQL
+      - "7199:7199"     # JMX (nodetool)
+    environment:
+      JVM_EXTRA_OPTS: "-XX:-UnlockDiagnosticVMOptions"
+      # ── required ─────────────────────────────────────────────
+      CASSANDRA_SEEDS: 127.0.0.1                 # self, single-node
+      CASSANDRA_LISTEN_ADDRESS: 0.0.0.0         # where it listens
+      CASSANDRA_BROADCAST_ADDRESS: c127.0.0.1ssandra     # what it advertises to peers
+      CASSANDRA_RPC_ADDRESS: 0.0.0.0             # listen on all IFs
+      CASSANDRA_BROADCAST_RPC_ADDRESS: 127.0.0.1 # advertise concrete name
+
+      # ── optional but helpful ────────────────────────────────
+      LOCAL_JMX: "yes"           # so nodetool works without extra opts
+      CASSANDRA_CLUSTER_NAME: dev-cluster
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
     volumes:
       - cassandra-data:/var/lib/cassandra
 
-  kafka-ui:
-    <<: *common-opts
-    image: docker.io/provectuslabs/kafka-ui:latest
-    container_name: kafka-ui
-    depends_on:
-      - kafka
-    environment:
-      KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
-      DYNAMIC_CONFIG_ENABLED: "true"
-    ports:
-      - "8080:8080"
+  # kafka-ui:
+  #   <<: *common-opts
+  #   image: quay.io/provectuslabs/kafka-ui:v0.7.2
+  #   container_name: kafka-ui
+  #   depends_on:
+  #     - kafka
+  #   environment:
+  #     KAFKA_CLUSTERS_0_NAME: local
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+  #     KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+  #     DYNAMIC_CONFIG_ENABLED: "true"
+  #   ports:
+  #     - "8080:8080"
