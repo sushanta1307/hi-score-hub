@@ -1,0 +1,13 @@
+syntax = "proto3";
+package leaderboard;
+
+option java_package = "com.example.leaderboard.proto";
+option java_multiple_files = true;
+
+message ScoreUpdate {
+  string leaderboard_id = 1;
+  string player_id      = 2;
+  int64  score          = 3;          // current score / delta—interpretation left to downstream
+  int64  timestamp_ms   = 4;          // client-supplied epoch-ms
+}
+

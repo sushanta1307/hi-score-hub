@@ -50,6 +50,18 @@ services:
       - "29092:29092"
     volumes:
       - kafka-data:/var/lib/kafka/data
+    
+  topic-init:
+    image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/kafka:OCI_25.3.1.0.3
+    depends_on: [kafka]
+    entrypoint: ["/bin/bash","-c"]
+    command: >
+      "sleep 25 &&
+      kafka-topics --bootstrap-server kafka:29092
+                    --create --if-not-exists
+                    --topic score_updates
+                    --partitions 12
+                    --replication-factor 1"
 
   schema-registry:
     <<: *common-opts
