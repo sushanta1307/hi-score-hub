@@ -6,7 +6,11 @@ x-common-opts: &common-opts
     - label=disable
 
 volumes:
-  kafka-data:
+  zkdata:
+  zklocal:
+  zklogs:
+  kafkalogs:
+  kafkadata:
   mysql-data:
   cassandra-data:
 
@@ -16,67 +20,108 @@ networks:
     driver: bridge
 
 services:
-
   zookeeper:
-    <<: *common-opts
     image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/zookeeper:081220220604
-    container_name: zookeeper
+    # Set full FQDN so `hostname -f` includes a dot
+    hostname: zookeeper-0.zookeeper
     restart: unless-stopped
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
+    # Make sure the FQDN resolves to localhost inside the container
+    extra_hosts:
+      - "zookeeper-0.zookeeper:127.0.0.1"
+
+    # Only mount what the script writes
+    volumes:
+      - zklocal:/u01/app/zk/local:Z                # parent dir; script creates local/<HOSTNAME>/zk_data
+      - zklogs:/u01/app/zk/logs:Z                  # logs
+      - ./zkconf:/etc/zookeeper-config:Z,ro        # 3 files: INITIAL_CLUSTER_SIZE, MY_ID, SERVER_LIST
+
+    environment:
+      # The script reads these (files provide cluster sizing; env drive paths and indices)
+      MY_POD_NAME: "zookeeper-0"
+      STATEFULSET_NAMESPACE: "local"
+      app_files_folder: "/u01/app/zk"
+      ZK_HEAP_SIZE: "512M"
+      ZK_HOME: "/u01/app/zk"
+
+    healthcheck:
+      test: ["CMD","bash","-c","echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   kafka:
-    <<: *common-opts
     image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/kafka:OCI_25.3.1.0.3
     container_name: kafka
-    depends_on:
-      - zookeeper
     restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"     # host access
+      - "29092:29092"   # internal listener
     environment:
-      KAFKA_BROKER_ID: 1
+      # Core
+      KAFKA_BROKER_ID: "1"
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # Expose one listener for host (localhost) and one for container-to-container traffic
+      KAFKA_ZOOKEEPER_CONNECT_TIMEOUT_MS: "30000"
+      KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: "30000"
+
+      # Listeners: host and internal
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-    ports:
-      - "9092:9092"
-      - "29092:29092"
+
+      # Single-node replication (dev only)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+
+      # Allow SR to create __schemas on first access (you can remove later)
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+      # Modest JVM heap for laptops
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
     volumes:
-      - kafka-data:/var/lib/kafka/data
-    
+      # Mount ONLY writable dirs (avoid masking app tree)
+      - kafkadata:/u01/app/kafka/kafka_data:Z
+      - kafkalogs:/u01/app/kafka/logs:Z
+    healthcheck:
+      test: ["CMD", "bash", "-c", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   topic-init:
     image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/kafka:OCI_25.3.1.0.3
-    depends_on: [kafka]
+    depends_on:
+      kafka:
+        condition: service_healthy
     entrypoint: ["/bin/bash","-c"]
     command: >
-      "sleep 25 &&
-      kafka-topics --bootstrap-server kafka:29092
-                    --create --if-not-exists
-                    --topic score_updates
-                    --partitions 12
-                    --replication-factor 1"
+      sleep 20 &&
+      /u01/app/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092
+        --create --if-not-exists --topic __schemas --partitions 1 --replication-factor 1 &&
+      /u01/app/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092
+        --create --if-not-exists --topic score_updates --partitions 12 --replication-factor 1
+    restart: "no"
 
   schema-registry:
-    <<: *common-opts
     image: sa-gateway-management-dev-docker-local.artifactory-builds.oci.oraclecorp.com/schema-registry:0.0.48
     container_name: schema-registry
-    depends_on:
-      - kafka
     restart: unless-stopped
-    environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: INTERNAL://kafka:29092
-      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    depends_on:
+      kafka:
+        condition: service_healthy
     ports:
       - "8081:8081"
-
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      # If your SR expects named listeners (Confluent style), keep INTERNAL://
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: INTERNAL://kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      
   mysql:
     <<: *common-opts
     image: oicng-docker-local.artifactory-builds.oci.oraclecorp.com/mysql:5.7

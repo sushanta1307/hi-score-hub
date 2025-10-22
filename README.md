@@ -66,6 +66,15 @@ brew install podman podman-compose openjdk@17 cmake protobuf
 ```bash
 # Start the stack
 
+# Select any base directory on the host
+export ODO_DATA_DIR=$HOME/odo-data          # or another absolute path
+
+# Create the hierarchy used by the image
+mkdir -p $ODO_DATA_DIR/zk/{data,logs,conf}
+
+# Make it writable for UID 1000 (the uid the image uses)
+sudo chown -R 1000:1000 $ODO_DATA_DIR
+
 # from repo root
 podman-compose -f podman-compose.yml up -d        # or just 'podman-compose up -d'
 
