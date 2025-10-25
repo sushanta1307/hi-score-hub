@@ -18,6 +18,7 @@ networks:
   default:
     name: leaderboard-net
     driver: bridge
+  appnet:
 
 services:
   zookeeper:
@@ -51,47 +52,29 @@ services:
       timeout: 3s
       retries: 20
 
+    networks:
+      appnet:
+        aliases:
+          - zookeeper               # short name
+          - zookeeper-0.zookeeper   # FQDN-style alias
+
   kafka:
     image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/kafka:OCI_25.3.1.0.3
     container_name: kafka
     restart: unless-stopped
-    depends_on:
-      zookeeper:
-        condition: service_healthy
     ports:
-      - "9092:9092"     # host access
-      - "29092:29092"   # internal listener
-    environment:
-      # Core
-      KAFKA_BROKER_ID: "1"
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ZOOKEEPER_CONNECT_TIMEOUT_MS: "30000"
-      KAFKA_ZOOKEEPER_SESSION_TIMEOUT_MS: "30000"
-
-      # Listeners: host and internal
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
-
-      # Single-node replication (dev only)
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
-
-      # Allow SR to create __schemas on first access (you can remove later)
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-
-      # Modest JVM heap for laptops
-      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+      - "9092:9092"      # client (host)
+      - "29092:29092"    # client (internal)
+      - "9093:9093"      # controller (internal)
     volumes:
-      # Mount ONLY writable dirs (avoid masking app tree)
       - kafkadata:/u01/app/kafka/kafka_data:Z
       - kafkalogs:/u01/app/kafka/logs:Z
-    healthcheck:
-      test: ["CMD", "bash", "-c", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
+      - ./scripts/kafka-kraft-entrypoint.sh:/entrypoint/kafka-kraft-entrypoint.sh:ro,Z
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+    entrypoint: ["/bin/bash","/entrypoint/kafka-kraft-entrypoint.sh"]
+    networks:
+      appnet:
 
   topic-init:
     image: odo-docker-signed-local.artifactory-builds.oci.oraclecorp.com/kafka:OCI_25.3.1.0.3
@@ -107,21 +90,17 @@ services:
         --create --if-not-exists --topic score_updates --partitions 12 --replication-factor 1
     restart: "no"
 
-  schema-registry:
-    image: sa-gateway-management-dev-docker-local.artifactory-builds.oci.oraclecorp.com/schema-registry:0.0.48
-    container_name: schema-registry
-    restart: unless-stopped
-    depends_on:
-      kafka:
-        condition: service_healthy
+  schema-catalogue:
+    image: ghcr.io/oracle/oraclelinux:9
+    container_name: schema-catalogue
+    command: ["/bin/bash","-c","python3 -m http.server 8082 --directory /opt/schemas"]
+    volumes:
+      - ./schemas:/opt/schemas:ro,Z    # keep your .proto/.avsc files versioned here
     ports:
-      - "8081:8081"
-    environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      # If your SR expects named listeners (Confluent style), keep INTERNAL://
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: INTERNAL://kafka:29092
-      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
-      
+      - "8082:8082"
+    networks:
+      appnet:
+
   mysql:
     <<: *common-opts
     image: oicng-docker-local.artifactory-builds.oci.oraclecorp.com/mysql:5.7
